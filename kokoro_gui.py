@@ -401,7 +401,7 @@ def ffmpeg_concat_to_mp3(input_paths: list[pathlib.Path], out_mp3: pathlib.Path,
     concat_in = ""
     for i in range(n):
         norm_chunks.append(
-            f"[{i}:a]aresample=24000,channel_layouts=mono[a{i}]"
+            f"[{i}:a]aresample=24000,aformat=channel_layouts=mono[a{i}]"
         )
         concat_in += f"[a{i}]"
     fc = ";".join(norm_chunks) + f";{concat_in}concat=n={n}:v=0:a=1[out]"
