@@ -33,6 +33,13 @@ AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg"}
 DEFAULT_LIBRARY_ROOT = str(pathlib.Path.home() / "KokoroLibrary")
 GENERATE_SAVE_NONE_LABEL = "None"
 SECTION_ORDER_FILENAME = ".kokoro_section_order.json"
+MERGED_FOLDER_NAME = "Merged"
+RECENT_MERGES_MAX = 50
+
+
+def merge_exports_dir(library_root: str) -> pathlib.Path:
+    root = (library_root or "").strip() or DEFAULT_LIBRARY_ROOT
+    return pathlib.Path(root).expanduser().resolve() / MERGED_FOLDER_NAME
 
 
 def detect_os():
@@ -819,14 +826,28 @@ class App(tk.Tk):
     def _build_ui(self):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
+        self._main_notebook = nb
 
         generate_tab = ttk.Frame(nb, padding=12)
         library_tab = ttk.Frame(nb, padding=12)
+        merged_tab = ttk.Frame(nb, padding=12)
         nb.add(generate_tab, text="Generate")
         nb.add(library_tab, text="Library")
+        nb.add(merged_tab, text="Merged")
+        nb.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
 
         self._build_generate_tab(generate_tab)
         self._build_library_tab(library_tab)
+        self._build_merged_tab(merged_tab)
+
+    def _on_notebook_tab_changed(self, event):
+        w = event.widget
+        try:
+            title = w.tab(w.select(), "text")
+        except tk.TclError:
+            return
+        if title == "Merged":
+            self.merged_refresh()
 
     def _build_generate_tab(self, frm):
         self._global_play_controls(frm)
@@ -1054,6 +1075,131 @@ class App(tk.Tk):
 
         self.after(100, self.library_refresh)
 
+    def _build_merged_tab(self, frm):
+        self._global_play_controls(frm)
+        hint = (
+            f'Use "Merge to MP3…" on Library. Saves default to '
+            f'"{MERGED_FOLDER_NAME}" under your library root. '
+            "Recent merges anywhere on disk appear here until you remove them or they are missing."
+        )
+        ttk.Label(frm, text=hint, wraplength=720).pack(anchor="w", pady=(0, 8))
+        row = ttk.Frame(frm)
+        row.pack(fill="x", pady=(0, 6))
+        ttk.Button(row, text="Refresh", command=self.merged_refresh).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(row, text="Play selected", command=self.play_merged_selection).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(row, text="Open Merged folder", command=self.open_merge_exports_folder).pack(
+            side="left"
+        )
+        self.merged_list = tk.Listbox(frm, height=20, selectmode=tk.SINGLE)
+        self.merged_list.pack(fill="both", expand=True)
+        self.merged_list.bind("<Double-Button-1>", lambda _e: self.play_merged_selection())
+        self.after(150, self.merged_refresh)
+
+    def merged_refresh(self):
+        ml = getattr(self, "merged_list", None)
+        if ml is None:
+            return
+        ml.delete(0, tk.END)
+        for p in self._iter_merged_display_paths():
+            ml.insert(tk.END, str(p))
+
+    def _iter_merged_display_paths(self) -> list[pathlib.Path]:
+        out: list[pathlib.Path] = []
+        seen: set[str] = set()
+        try:
+            mdir = merge_exports_dir(self.library_root.get())
+            mdir.mkdir(parents=True, exist_ok=True)
+            cands = [
+                p
+                for p in mdir.iterdir()
+                if p.is_file() and p.suffix.lower() in AUDIO_EXTS
+            ]
+            cands.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            for p in cands:
+                r = str(p.resolve())
+                if r not in seen:
+                    seen.add(r)
+                    out.append(p.resolve())
+        except OSError:
+            pass
+        cfg = load_config()
+        for raw in cfg.get("recent_merges", []):
+            if not isinstance(raw, str):
+                continue
+            try:
+                pp = pathlib.Path(raw).expanduser().resolve()
+            except OSError:
+                continue
+            if not pp.is_file() or pp.suffix.lower() not in AUDIO_EXTS:
+                continue
+            r = str(pp)
+            if r not in seen:
+                seen.add(r)
+                out.append(pp)
+        return out
+
+    def _record_recent_merge(self, out: pathlib.Path) -> None:
+        try:
+            key = str(out.expanduser().resolve())
+        except OSError:
+            return
+        cfg = load_config()
+        prev = [x for x in cfg.get("recent_merges", []) if isinstance(x, str)]
+        rest: list[str] = []
+        for x in prev:
+            try:
+                if pathlib.Path(x).expanduser().resolve() != pathlib.Path(key).expanduser().resolve():
+                    rest.append(x)
+            except OSError:
+                rest.append(x)
+        rest.insert(0, key)
+        cfg["recent_merges"] = rest[:RECENT_MERGES_MAX]
+        save_config(cfg)
+
+    def play_merged_selection(self):
+        if not self._playback_ready():
+            return
+        ml = getattr(self, "merged_list", None)
+        if ml is None:
+            return
+        idx = ml.curselection()
+        if not idx:
+            messagebox.showinfo("Merged", "Select a merged file.")
+            return
+        path = pathlib.Path(ml.get(idx[0])).expanduser()
+        if path.is_file():
+            self._playback_engine.play_one(path)
+        else:
+            messagebox.showinfo("Merged", "File missing. Click Refresh.")
+            self.merged_refresh()
+
+    def open_merge_exports_folder(self):
+        d = merge_exports_dir(self.library_root.get())
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("Merged folder", str(exc))
+            return
+        try:
+            if platform.system().lower().startswith("win"):
+                os.startfile(str(d))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(d)])
+            else:
+                subprocess.Popen(["xdg-open", str(d)])
+        except Exception as exc:
+            messagebox.showerror("Open folder", str(exc))
+
+    def _finalize_merge_success(self, out: pathlib.Path) -> None:
+        self._record_recent_merge(out)
+        self.library_refresh()
+        self.merged_refresh()
+        messagebox.showinfo("Merge", f"Saved merged audio:\n{out}")
+
     def pick_library_root(self):
         path = filedialog.askdirectory(
             initialdir=self.library_root.get() or DEFAULT_LIBRARY_ROOT
@@ -1061,6 +1207,7 @@ class App(tk.Tk):
         if path:
             self.library_root.set(path)
             self._refresh_generate_save_combo()
+            self.merged_refresh()
 
     def open_library_root(self):
         root = pathlib.Path(self.library_root.get()).expanduser()
@@ -1281,10 +1428,17 @@ class App(tk.Tk):
             messagebox.showinfo("Merge", "No audio files in this section.")
             return
         stem = sanitize_filename(sec.name, max_len=60) + "_full"
+        try:
+            mdir = merge_exports_dir(self.library_root.get())
+            mdir.mkdir(parents=True, exist_ok=True)
+            initial_dir = str(mdir)
+        except OSError:
+            initial_dir = self.library_root.get() or DEFAULT_LIBRARY_ROOT
         dest = filedialog.asksaveasfilename(
             parent=self,
             title="Save merged MP3",
             defaultextension=".mp3",
+            initialdir=initial_dir,
             initialfile=f"{stem}.mp3",
             filetypes=[("MP3", "*.mp3")],
         )
@@ -1307,14 +1461,7 @@ class App(tk.Tk):
                 self.log(f"Copied single track to: {out}")
             else:
                 ffmpeg_concat_to_mp3(paths, out, self.log)
-            done = str(out)
-            self.after(
-                0,
-                lambda msg=done: messagebox.showinfo(
-                    "Merge", f"Saved merged audio:\n{msg}"
-                ),
-            )
-            self.after(0, self.library_refresh)
+            self.after(0, self._finalize_merge_success, out.resolve())
         except subprocess.CalledProcessError as error:
             detail = getattr(error, "stderr", None) or getattr(error, "stdout", None) or str(error)
             err_msg = (
