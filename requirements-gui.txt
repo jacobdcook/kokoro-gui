@@ -1,0 +1,3 @@
+# Install into the SAME Python you use to launch kokoro_gui.py (not the Kokoro venv under ~/.kokoro_gui).
+# Needed for Play / playlist in the GUI.
+pygame>=2.5
