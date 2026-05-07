@@ -7,6 +7,7 @@ import platform
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -664,6 +665,10 @@ class PlaybackEngine:
     def shutdown(self):
         self._q.put(("shutdown",))
 
+    def join_worker(self, timeout: float = 5.0) -> None:
+        if self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
 
 def unique_out_path(directory: pathlib.Path, base_name: str, ext: str) -> pathlib.Path:
     safe = sanitize_filename(base_name)
@@ -727,6 +732,10 @@ class App(tk.Tk):
         )
         self._playback_status = tk.StringVar(value="engine…")
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_window_close)
+
+    def _on_window_close(self):
+        self.destroy()
 
     def _on_playback_state(self, state_name: str):
         def bump():
@@ -1603,11 +1612,28 @@ class App(tk.Tk):
     def destroy(self):
         try:
             self._playback_engine.shutdown()
-            time.sleep(0.08)
+            self._playback_engine.join_worker(timeout=5.0)
         except Exception:
             pass
-        super().destroy()
+        try:
+            super().destroy()
+        except tk.TclError:
+            pass
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    app = App()
+
+    def _sigint_handler(_signum, _frame):
+        try:
+            app.after(0, app.destroy)
+        except tk.TclError:
+            os._exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except (ValueError, OSError):
+        pass
+
+    app.mainloop()
+    sys.exit(0)
