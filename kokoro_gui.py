@@ -1140,6 +1140,21 @@ class App(tk.Tk):
             if r not in seen:
                 seen.add(r)
                 out.append(pp)
+        try:
+            if APP_DIR.is_dir():
+                orphans = [
+                    p
+                    for p in APP_DIR.iterdir()
+                    if p.is_file() and p.suffix.lower() in AUDIO_EXTS
+                ]
+                orphans.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                for p in orphans:
+                    rr = str(p.resolve())
+                    if rr not in seen:
+                        seen.add(rr)
+                        out.append(p.resolve())
+        except OSError:
+            pass
         return out
 
     def _record_recent_merge(self, out: pathlib.Path) -> None:
